@@ -621,34 +621,6 @@ static int oplus_ofp_set_aod_state(bool aod_state)
 	return 0;
 }
 
-/* aod unlocking value update */
-static int oplus_ofp_aod_unlocking_update(void)
-{
-	struct oplus_ofp_params *p_oplus_ofp_params = oplus_ofp_get_params(oplus_ofp_display_id);
-
-	OFP_DEBUG("start\n");
-
-	if (!p_oplus_ofp_params) {
-		OFP_ERR("Invalid params\n");
-		return -EINVAL;
-	}
-
-	OPLUS_OFP_TRACE_BEGIN("oplus_ofp_aod_unlocking_update");
-
-	if (p_oplus_ofp_params->fp_press || p_oplus_ofp_params->doze_active) {
-		/* press icon layer is ready in aod mode */
-		p_oplus_ofp_params->aod_unlocking = true;
-		OFP_INFO("oplus_ofp_aod_unlocking:%d\n", p_oplus_ofp_params->aod_unlocking);
-		OPLUS_OFP_TRACE_INT("oplus_ofp_aod_unlocking", p_oplus_ofp_params->aod_unlocking);
-	}
-
-	OPLUS_OFP_TRACE_END("oplus_ofp_aod_unlocking_update");
-
-	OFP_DEBUG("end\n");
-
-	return 0;
-}
-
 /* update hbm_enable property value */
 int oplus_ofp_property_update(void *sde_connector, void *sde_connector_state, int prop_id, uint64_t prop_val)
 {
@@ -2977,11 +2949,6 @@ int oplus_ofp_aod_off_handle(void *dsi_display)
 	}
 	oplus_ofp_set_aod_state(false);
 
-	if (!oplus_ofp_oled_capacitive_is_enabled()) {
-		/* update aod unlocking value */
-		oplus_ofp_aod_unlocking_update();
-	}
-
 	/* aod off cmds are sent to ddic */
 	p_oplus_ofp_params->aod_off_cmd_timestamp = ktime_get();
 	OFP_DEBUG("aod_off_cmd_timestamp:%lu\n", ktime_to_ms(p_oplus_ofp_params->aod_off_cmd_timestamp));
@@ -3328,7 +3295,7 @@ static int oplus_ofp_aod_off_set(void)
 */
 int oplus_ofp_touchpanel_event_notifier_call(struct notifier_block *nb, unsigned long action, void *data)
 {
-	struct touchpanel_event *tp_event = (struct touchpanel_event *)data;
+	//struct touchpanel_event *tp_event = (struct touchpanel_event *)data;
 
 	OFP_DEBUG("start\n");
 
@@ -3339,10 +3306,10 @@ int oplus_ofp_touchpanel_event_notifier_call(struct notifier_block *nb, unsigned
 
 	OPLUS_OFP_TRACE_BEGIN("oplus_ofp_touchpanel_event_notifier_call");
 
+#if 0
 	if (tp_event) {
 		if (action == EVENT_ACTION_FOR_FINGPRINT) {
 			OFP_DEBUG("EVENT_ACTION_FOR_FINGPRINT\n");
-
 			if (tp_event->touch_state == 1) {
 				OFP_INFO("tp touchdown\n");
 				/* send aod off cmds in doze mode to speed up fingerprint unlocking */
@@ -3350,6 +3317,7 @@ int oplus_ofp_touchpanel_event_notifier_call(struct notifier_block *nb, unsigned
 			}
 		}
 	}
+#endif
 
 	OPLUS_OFP_TRACE_END("oplus_ofp_touchpanel_event_notifier_call");
 
@@ -4098,11 +4066,13 @@ int oplus_ofp_notify_fp_press(void *buf)
 	OFP_INFO("oplus_ofp_fp_press:%d\n", p_oplus_ofp_params->fp_press);
 	OPLUS_OFP_TRACE_INT("oplus_ofp_fp_press", p_oplus_ofp_params->fp_press);
 
+#if 0
 	if (p_oplus_ofp_params->fp_press) {
 		/* send aod off cmds in doze mode to speed up fingerprint unlocking */
 		OFP_DEBUG("fp press is true\n");
 		oplus_ofp_aod_off_set();
 	}
+#endif
 
 	OPLUS_OFP_TRACE_END("oplus_ofp_notify_fp_press");
 
