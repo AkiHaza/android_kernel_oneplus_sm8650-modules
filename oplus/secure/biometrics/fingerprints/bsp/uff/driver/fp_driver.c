@@ -154,6 +154,41 @@ struct fp_dev           fp_dev_data;
 
 static struct workqueue_struct *fp_wq;
 
+static struct pm_qos_request fp_cpu_latency_req;
+static struct delayed_work fp_cpu_latency_release_work;
+static DEFINE_SPINLOCK(fp_cpu_latency_lock);
+static bool fp_cpu_latency_held;
+
+static void fp_cpu_latency_release_work_fn(struct work_struct *work)
+{
+    unsigned long flags;
+
+    (void)work;
+    spin_lock_irqsave(&fp_cpu_latency_lock, flags);
+    if (!fp_cpu_latency_held) {
+        spin_unlock_irqrestore(&fp_cpu_latency_lock, flags);
+        return;
+    }
+    fp_cpu_latency_held = false;
+    spin_unlock_irqrestore(&fp_cpu_latency_lock, flags);
+    cpu_latency_qos_update_request(&fp_cpu_latency_req, PM_QOS_DEFAULT_VALUE);
+}
+
+static void fp_cpu_latency_boost(void)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&fp_cpu_latency_lock, flags);
+    if (!fp_cpu_latency_held) {
+        fp_cpu_latency_held = true;
+        spin_unlock_irqrestore(&fp_cpu_latency_lock, flags);
+        cpu_latency_qos_update_request(&fp_cpu_latency_req, 0);
+    } else {
+        spin_unlock_irqrestore(&fp_cpu_latency_lock, flags);
+    }
+    mod_delayed_work(system_wq, &fp_cpu_latency_release_work, msecs_to_jiffies(500));
+}
+
 #define MAX_MSGSIZE 32
 
 static int   pid            = -1;
@@ -1020,11 +1055,13 @@ static int oplus_tp_notifier_call(struct notifier_block *nb, unsigned long val, 
                 cpu_boost_max(500);
 		qcom_dcvs_bus_boost_kick_max(500);
 		devfreq_gpu_kick(500);
+                fp_cpu_latency_boost();
                 fp_enable_intr3(fp_dev);
                 lasttouchmode = tp_info->touch_state;
                 fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
             } else {
                 fp_disable_intr3(fp_dev);
+                fp_cpu_latency_boost();
                 fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
                 lasttouchmode = tp_info->touch_state;
             }
@@ -1089,11 +1126,13 @@ int opticalfp_irq_handler_uff(struct fp_underscreen_info *tp_info) {
     pr_debug("[%s] tp_info->touch_state =%d, tp_info->x =%d, tp_info->y =%d\n", __func__, tp_info->touch_state, tp_info->x, tp_info->y);
     wake_lock_timeout(&fp_wakelock, msecs_to_jiffies(WAKELOCK_HOLD_IRQ_TIME));
     if (1 == tp_info->touch_state) {
+        fp_cpu_latency_boost();
         fp_enable_intr3(fp_dev);
         lasttouchmode = tp_info->touch_state;
         fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
     } else {
         fp_disable_intr3(fp_dev);
+        fp_cpu_latency_boost();
         fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
         lasttouchmode = tp_info->touch_state;
     }
@@ -1189,6 +1228,8 @@ static int fp_probe(oplus_fp_device *pdev) {
 
     wake_lock_init(&fp_wakelock, WAKE_LOCK_SUSPEND, "fp_wakelock");
     wake_lock_init(&fp_cmd_wakelock, WAKE_LOCK_SUSPEND, "fp_cmd_wakelock");
+    cpu_latency_qos_add_request(&fp_cpu_latency_req, PM_QOS_DEFAULT_VALUE);
+    INIT_DELAYED_WORK(&fp_cpu_latency_release_work, fp_cpu_latency_release_work_fn);
     g_fp_probe_statue = FINGERPRINT_PROBE_OK;
 
     fp_wq = alloc_ordered_workqueue("fp_wq", WQ_MEM_RECLAIM | WQ_HIGHPRI);
@@ -1226,6 +1267,8 @@ static int fp_remove(oplus_fp_device *pdev) {
 #endif
     struct fp_dev *fp_dev = &fp_dev_data;
     g_fp_probe_statue = FINGERPRINT_PROBE_FAIL;
+    cancel_delayed_work_sync(&fp_cpu_latency_release_work);
+    cpu_latency_qos_remove_request(&fp_cpu_latency_req);
     wake_lock_destroy(&fp_wakelock);
     wake_lock_destroy(&fp_cmd_wakelock);
 
