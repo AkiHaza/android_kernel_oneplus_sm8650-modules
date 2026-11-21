@@ -1,0 +1,118 @@
+name: Watch waffle OTA and sync seventeen
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync-seventeen:
+    name: Sync seventeen from YAAP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Merge YAAP updates into seventeen
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/yaap/kernel_oneplus_sm8650-modules.git
+          git fetch upstream +refs/heads/seventeen:refs/remotes/upstream/seventeen
+          git fetch origin +refs/heads/seventeen:refs/remotes/origin/seventeen
+          git switch --force-create seventeen refs/remotes/origin/seventeen
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit -X theirs refs/remotes/upstream/seventeen
+          git push origin HEAD:refs/heads/seventeen
+
+  tag-waffle-ota:
+    name: Tag new waffle OTA metadata
+    needs: sync-seventeen
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read the latest waffle OTA
+        id: ota
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          import re
+          from datetime import datetime, timezone
+          from urllib.parse import urlparse
+          from urllib.request import Request, urlopen
+
+          request = Request(
+              "https://raw.githubusercontent.com/yaap/ota-info/full-signed-1/waffle/waffle.json",
+              headers={"Accept": "application/json", "User-Agent": "waffle-ota-watcher"},
+          )
+          with urlopen(request, timeout=30) as response:
+              metadata = json.load(response)
+
+          releases = [
+              item for item in metadata.get("response", [])
+              if "waffle" in item.get("filename", "").lower()
+          ]
+          if not releases:
+              raise SystemExit("No waffle OTA entry found in ota-info")
+
+          latest = max(releases, key=lambda item: int(item["datetime"]))
+          filename = latest["filename"]
+          ota_url = latest["url"]
+          if not re.fullmatch(r"[A-Za-z0-9._-]+", filename):
+              raise SystemExit("Unexpected OTA filename")
+          parsed_url = urlparse(ota_url)
+          if parsed_url.scheme != "https" or parsed_url.netloc != "downloads.yaaprom.org":
+              raise SystemExit("Unexpected OTA download host")
+
+          date_match = re.search(r"-(\d{8})\.zip$", filename, re.IGNORECASE)
+          if date_match:
+              release_date = date_match.group(1)
+          else:
+              release_date = datetime.fromtimestamp(
+                  int(latest["datetime"]), timezone.utc
+              ).strftime("%Y%m%d")
+
+          canonical = json.dumps(latest, sort_keys=True, separators=(",", ":")).encode()
+          digest = hashlib.sha256(canonical).hexdigest()
+          print(f"tag=waffle-{release_date}-{digest[:12]}")
+          print(f"filename={filename}")
+          print(f"url={ota_url}")
+          print(f"digest={digest}")
+          PY
+
+      - name: Create and push an OTA tag if new
+        env:
+          OTA_TAG: ${{ steps.ota.outputs.tag }}
+          OTA_FILENAME: ${{ steps.ota.outputs.filename }}
+          OTA_URL: ${{ steps.ota.outputs.url }}
+          OTA_DIGEST: ${{ steps.ota.outputs.digest }}
+        run: |
+          set -euo pipefail
+          git fetch origin +refs/heads/seventeen:refs/remotes/origin/seventeen
+          git switch --detach refs/remotes/origin/seventeen
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$OTA_TAG" >/dev/null 2>&1; then
+            echo "Tag $OTA_TAG already exists; no new waffle OTA to tag."
+            exit 0
+          fi
+
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              tag -a "$OTA_TAG" \
+              -m "YAAP waffle OTA: $OTA_FILENAME" \
+              -m "$OTA_URL" \
+              -m "Canonical OTA metadata SHA-256: $OTA_DIGEST"
+          git push origin "refs/tags/$OTA_TAG"
